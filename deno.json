@@ -1,0 +1,13 @@
+{
+  "tasks": {
+    "start": "deno run --unstable-kv --allow-net --allow-env --allow-read --allow-write main.ts",
+    "dev": "deno run --unstable-kv --allow-net --allow-env --allow-read --allow-write --watch main.ts"
+  },
+  "fmt": {
+    "semiColons": true,
+    "singleQuote": false
+  },
+  "lint": {
+    "rules": { "tags": ["recommended"] }
+  }
+}
