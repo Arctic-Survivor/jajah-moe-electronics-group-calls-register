@@ -62,6 +62,7 @@ interface Employee {
   id: string;
   name: string;
   username: string;
+  jobTitle: string;
   salt: string;
   hash: string;
   role: "admin" | "operator";
@@ -89,6 +90,7 @@ interface CallRecord {
   action: string;
   dept: string;
   deptNum: string;
+  deptNoResponse: boolean;
   notes: string;
   adminNote: string;
   createdAt: string;
@@ -98,7 +100,7 @@ interface CallRecord {
 
 function publicEmployee(e: Employee) {
   return {
-    id: e.id, name: e.name, username: e.username, role: e.role, active: e.active,
+    id: e.id, name: e.name, username: e.username, jobTitle: e.jobTitle || "", role: e.role, active: e.active,
     pendingReset: e.pendingReset, pendingResetAt: e.pendingResetAt, createdAt: e.createdAt,
   };
 }
@@ -164,7 +166,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (await getEmployeeByUsername(username)) return bad("الرقم الشخصي مستخدم بالفعل");
     const { salt, hash } = await setPassword(password);
     const emp: Employee = {
-      id: newId(), name, username, salt, hash, role: "admin", active: true,
+      id: newId(), name, username, jobTitle: (body?.jobTitle || "").trim(), salt, hash, role: "admin", active: true,
       pendingReset: false, pendingResetAt: null, createdAt: nowIso(),
     };
     await kv.set(["employees", emp.id], emp);
@@ -248,6 +250,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const body = await req.json().catch(() => null);
     const name = (body?.name || "").trim();
     const username = (body?.username || "").trim();
+    const jobTitle = (body?.jobTitle || "").trim();
     const password = String(body?.password || "0000");
     const role = body?.role === "admin" ? "admin" : "operator";
     if (!name) return bad("اكتبي الاسم");
@@ -255,7 +258,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (await getEmployeeByUsername(username)) return bad("الرقم الشخصي مستخدم بالفعل لحساب آخر", 409);
     const { salt, hash } = await setPassword(password);
     const emp: Employee = {
-      id: newId(), name, username, salt, hash, role, active: true,
+      id: newId(), name, username, jobTitle, salt, hash, role, active: true,
       pendingReset: false, pendingResetAt: null, createdAt: nowIso(),
     };
     await kv.set(["employees", emp.id], emp);
@@ -270,6 +273,8 @@ async function api(req: Request, url: URL): Promise<Response> {
       if (!rec.value) return bad("غير موجود", 404);
       const emp = rec.value;
       const body = await req.json().catch(() => null) || {};
+      if (typeof body.name === "string" && body.name.trim()) emp.name = body.name.trim();
+      if (typeof body.jobTitle === "string") emp.jobTitle = body.jobTitle.trim();
       if (typeof body.active === "boolean") emp.active = body.active;
       if (body.role === "admin" || body.role === "operator") emp.role = body.role;
       if (typeof body.newPassword === "string" && body.newPassword.length >= 4) {
@@ -278,6 +283,20 @@ async function api(req: Request, url: URL): Promise<Response> {
       }
       await kv.set(["employees", emp.id], emp);
       return json(publicEmployee(emp));
+    }
+    if (m && method === "DELETE") {
+      if (!requireAdmin()) return bad("صلاحية مشرف مطلوبة", 403);
+      if (m[1] === me.id) return bad("لا يمكنك حذف حسابك الخاص وأنتِ مسجّلة دخول به", 400);
+      const rec = await kv.get<Employee>(["employees", m[1]]);
+      if (!rec.value) return bad("غير موجود", 404);
+      if (rec.value.role === "admin") {
+        const all = await listEmployees();
+        const adminCount = all.filter((e) => e.role === "admin").length;
+        if (adminCount <= 1) return bad("لا يمكن حذف آخر حساب مشرف في النظام", 400);
+      }
+      await kv.delete(["employees", m[1]]);
+      await kv.delete(["employees_by_username", rec.value.username]);
+      return json({ ok: true });
     }
   }
 
@@ -305,6 +324,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       date: body.date || "", time: body.time || "",
       num, caller, entity, subject: (body.subject || "").trim(), action,
       dept: action === "تحويل" ? dept : "", deptNum: action === "تحويل" ? (body.deptNum || "") : "",
+      deptNoResponse: false,
       notes, adminNote: "", createdAt: nowIso(), editedAt: null, editCount: 0,
     };
     await kv.set(["records", r.id], r);
@@ -344,6 +364,7 @@ async function api(req: Request, url: URL): Promise<Response> {
         r.notes = (body.notes ?? r.notes).trim();
         r.adminNote = (body.adminNote ?? r.adminNote).trim();
       }
+      if (typeof body.deptNoResponse === "boolean") r.deptNoResponse = body.deptNoResponse;
       r.editedAt = nowIso(); r.editCount = (r.editCount || 0) + 1;
       await kv.set(["records", r.id], r);
       return json(r);
@@ -623,7 +644,7 @@ tbody tr:hover{background:#fcfbf9}
   </header>
   <main class="wrap">
     <div class="tabs">
-      <button class="tab on" data-t="reports">التقارير</button>
+      <button class="tab on" data-t="reports">سجل المكالمات والتقارير</button>
       <button class="tab" data-t="staff">الحسابات</button>
       <button class="tab" data-t="transfers">قوائم التحويل</button>
     </div>
@@ -641,10 +662,15 @@ tbody tr:hover{background:#fcfbf9}
         <div class="f"><label for="p-op">الحساب</label><select id="p-op"><option value="">الكل</option></select></div>
         <button class="btn ghost small" id="p-refresh">تحديث</button>
         <button class="btn ghost small" id="p-csv">تصدير (CSV)</button>
+        <button class="btn ghost small" id="p-pdf">تصدير تقرير (PDF)</button>
       </div>
       <div class="grid" style="grid-template-columns:1fr 1fr;margin-bottom:18px">
         <div class="card"><h2>المكالمات لكل حساب</h2><div class="pad"><div class="bars" id="p-byop"></div></div></div>
         <div class="card"><h2>التوزيع بالساعة</h2><div class="pad"><div class="bars" id="p-byhour"></div></div></div>
+      </div>
+      <div class="card" style="margin-bottom:18px">
+        <h2>الجهات الأقل استجابة للتحويل<span class="tag" style="font-weight:400">لم تُجب رغم تحويل المكالمة إليها</span></h2>
+        <div class="pad"><div class="bars" id="p-byNoResponse"></div></div>
       </div>
       <div class="card">
         <h2>السجل المجمّع<span class="tag"><span id="p-count">0</span> صف</span></h2>
@@ -661,8 +687,11 @@ tbody tr:hover{background:#fcfbf9}
             <div class="f"><label for="st-user">الرقم الشخصي (اسم المستخدم)</label><input type="text" id="st-user" inputmode="numeric" autocomplete="off"></div>
           </div>
           <div class="row">
-            <div class="f"><label for="st-pass">كلمة المرور</label><input type="text" id="st-pass" placeholder="تُشارَك مع الموظفة مباشرة"></div>
+            <div class="f"><label for="st-job">الوصف الوظيفي</label><input type="text" id="st-job" placeholder="مثال: موظف استقبال" autocomplete="off"></div>
             <div class="f"><label for="st-role">الصلاحية</label><select id="st-role"><option value="operator">تسجيل فقط</option><option value="admin">إشرافية (مشرف)</option></select></div>
+          </div>
+          <div class="row">
+            <div class="f"><label for="st-pass">كلمة المرور</label><input type="text" id="st-pass" placeholder="تُشارَك مع الموظفة مباشرة"></div>
           </div>
           <button class="btn" id="st-add">إضافة الحساب</button>
         </div>
@@ -670,7 +699,7 @@ tbody tr:hover{background:#fcfbf9}
       <div class="card" style="margin-bottom:18px">
         <h2>استيراد حسابات من CSV</h2>
         <div class="pad">
-          <div class="drop" id="st-drop">اسحبي ملف CSV هنا (أعمدة: الاسم، الرقم الشخصي، نشطة، الصلاحية، كلمة المرور)، أو <button class="btn ghost small" id="st-pick">اختيار ملف</button>
+          <div class="drop" id="st-drop">اسحبي ملف CSV هنا (أعمدة: الاسم، الرقم الشخصي، الوصف الوظيفي، نشطة، الصلاحية، كلمة المرور)، أو <button class="btn ghost small" id="st-pick">اختيار ملف</button>
             <input type="file" id="st-file" accept=".csv" class="hidden">
           </div>
         </div>
@@ -734,12 +763,27 @@ tbody tr:hover{background:#fcfbf9}
   </div>
 </div>
 
+<div class="modal-bg hidden" id="v-staffmodal">
+  <div class="modal" style="max-width:420px">
+    <h3>تعديل بيانات الحساب</h3>
+    <div class="pad">
+      <div class="f"><label for="sm-name">الاسم</label><input type="text" id="sm-name"></div>
+      <div class="f"><label for="sm-job">الوصف الوظيفي</label><input type="text" id="sm-job" placeholder="مثال: موظف استقبال"></div>
+      <div class="btnrow">
+        <button class="btn" id="sm-save">حفظ</button>
+        <button class="btn ghost" id="sm-cancel">إلغاء</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
 (function(){
 "use strict";
 var me = null, transfers = [], editingId = null;
+var SEAL_URI = "${SEAL_DATA_URI}";
 
 function $(id){ return document.getElementById(id); }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }
@@ -766,10 +810,13 @@ function apiPost(path, body){ return api(path, { method:"POST", body: JSON.strin
 function apiPatch(path, body){ return api(path, { method:"PATCH", body: JSON.stringify(body||{}) }); }
 function apiDelete(path){ return api(path, { method:"DELETE" }); }
 
-var COLS = [["date","التاريخ"],["time","الوقت"],["opName","الحساب"],["num","رقم المتصل"],["caller","اسم المتصل"],["entity","جهة المتصل"],["subject","الموضوع"],["action","الإجراء"],["dept","حُوِّلت إلى"],["notes","ملاحظات الموظفة"],["adminNote","ملاحظة المشرف"]];
+var COLS = [["date","التاريخ"],["time","الوقت"],["opName","الحساب"],["num","رقم المتصل"],["caller","اسم المتصل"],["entity","جهة المتصل"],["subject","الموضوع"],["action","الإجراء"],["dept","حُوِّلت إلى"],["deptNoResponse","الجهة لم تستجب"],["notes","ملاحظات الموظفة"],["adminNote","ملاحظة المشرف"]];
 function csv(rows){
   var out = COLS.map(function(c){return c[1];}).join(",") + "\\r\\n";
-  rows.forEach(function(r){ out += COLS.map(function(c){ return '"'+String(r[c[0]]==null?"":r[c[0]]).replace(/"/g,'""')+'"'; }).join(",") + "\\r\\n"; });
+  rows.forEach(function(r){ out += COLS.map(function(c){
+    var v = c[0]==="deptNoResponse" ? (r.deptNoResponse?"نعم":"") : (r[c[0]]==null?"":r[c[0]]);
+    return '"'+String(v).replace(/"/g,'""')+'"';
+  }).join(",") + "\\r\\n"; });
   return "\\ufeff" + out;
 }
 
@@ -782,8 +829,8 @@ async function boot(){
   try{
     me = await apiGet("/api/me");
   }catch(e){ showOnly(["v-login"]); return; }
-  if(me.role==="admin"){ showOnly(["v-sup"]); $("p-who").textContent=me.name; await paintSup(); }
-  else { showOnly(["v-app"]); $("x-who").textContent=me.name; await bootConsole(); }
+  if(me.role==="admin"){ $("p-who").textContent=me.name; await paintSup(); showOnly(["v-sup"]); }
+  else { $("x-who").textContent=me.name; await bootConsole(); showOnly(["v-app"]); }
 }
 
 $("bs-go").onclick=async function(){
@@ -816,7 +863,7 @@ $("p-logout").onclick = logout;
 /* ---------------- operator console ---------------- */
 function transferOptions(){
   return '<option value="">— اختاري الجهة —</option>' + transfers.map(function(t){
-    return '<option value="'+t.id+'" data-num="'+esc(t.num||"")+'">'+esc(t.entity)+'</option>';
+    return '<option value="'+t.id+'" data-num="'+esc(t.num||"")+'" data-entity="'+esc(t.entity)+'">'+esc(t.entity)+(t.num?' — '+esc(t.num):'')+'</option>';
   }).join("");
 }
 function syncDeptVisibility(){
@@ -857,7 +904,7 @@ async function save(){
     date: $("f-date").value||todayStr(), time: $("f-time").value||nowStr(),
     num: $("f-num").value.trim(), caller: $("f-caller").value.trim(), entity: $("f-entity").value,
     subject: $("f-subject").value.trim(), action: $("f-action").value,
-    dept: isTr? (deptOpt?deptOpt.textContent:"") : "", deptNum: isTr? (deptOpt?deptOpt.dataset.num:""):""
+    dept: isTr? (deptOpt?deptOpt.dataset.entity:"") : "", deptNum: isTr? (deptOpt?deptOpt.dataset.num:""):""
   };
   payload.notes = $("f-notes").value.trim();
   try{
@@ -885,23 +932,32 @@ function paintTable(){
   if(!rows.length){ w.innerHTML='<div class="empty"><b>لا توجد مكالمات مسجّلة'+(all?"":" اليوم")+'</b>سجّلي المكالمة فور انتهائها.</div>'; return; }
   var h='<table><thead><tr><th>الوقت</th><th>المتصل</th><th>الموضوع</th><th>الإجراء</th><th></th></tr></thead><tbody>';
   rows.forEach(function(r){
+    var noResp = r.action==="تحويل" ? (r.deptNoResponse
+      ? '<div class="edited" style="color:var(--err)">⚠ الجهة لم تستجب — <button class="rowbtn" data-nr="'+r.id+'" data-v="0">إلغاء العلامة</button></div>'
+      : '<div><button class="rowbtn" data-nr="'+r.id+'" data-v="1">الجهة لم تستجب؟</button></div>') : '';
     h += '<tr><td class="t-time">'+esc(r.time)+(all?'<div class="t-sub">'+esc(r.date)+'</div>':'')+'</td>'
       + '<td>'+esc(r.caller||"—")+'<div class="t-sub">'+esc(r.num||"")+(r.entity?" · "+esc(r.entity):"")+'</div></td>'
       + '<td>'+esc(r.subject||"—")+'<div class="t-sub">'+esc(r.notes||"")+'</div></td>'
-      + '<td>'+pill(r.action)+(r.dept?'<div class="t-sub">'+esc(r.dept)+'</div>':'')+(r.editCount?'<div class="edited">مُعدَّلة</div>':'')+'</td>'
+      + '<td>'+pill(r.action)+(r.dept?'<div class="t-sub">'+esc(r.dept)+'</div>':'')+(r.editCount?'<div class="edited">مُعدَّلة</div>':'')+noResp+'</td>'
       + '<td><button class="rowbtn" data-e="'+r.id+'">تعديل</button></td></tr>';
   });
   w.innerHTML = h+'</tbody></table>';
 }
 async function paintConsole(){ myRecords = await apiGet("/api/records/mine"); paintStrip(); paintTable(); }
-$("x-tablewrap").addEventListener("click", function(e){
+$("x-tablewrap").addEventListener("click", async function(e){
+  var nr=e.target.closest("[data-nr]");
+  if(nr){
+    try{ await apiPatch("/api/records/"+nr.dataset.nr, {deptNoResponse: nr.dataset.v==="1"}); await paintConsole(); toast(nr.dataset.v==="1"?"تم وضع العلامة":"تم إلغاء العلامة"); }
+    catch(err){ toast(err.message); }
+    return;
+  }
   var ed=e.target.closest("[data-e]"); if(!ed) return;
   var r=myRecords.filter(function(x){return x.id===ed.dataset.e;})[0]; if(!r) return;
   editingId=r.id; $("x-mode").textContent="تعديل"; $("f-cancel").classList.remove("hidden");
   $("f-date").value=r.date; $("f-time").value=r.time; $("f-num").value=r.num; $("f-caller").value=r.caller;
   $("f-entity").value=r.entity||""; $("f-subject").value=r.subject||""; $("f-action").value=r.action;
   $("f-dept").innerHTML=transferOptions();
-  var opt=[].slice.call($("f-dept").options).filter(function(o){return o.textContent===r.dept;})[0]; if(opt) opt.selected=true;
+  var opt=[].slice.call($("f-dept").options).filter(function(o){return o.dataset.entity===r.dept;})[0]; if(opt) opt.selected=true;
   $("f-notes").value=r.notes||""; clearErrors(); syncDeptVisibility();
   window.scrollTo({top:0,behavior:"smooth"}); $("f-subject").focus();
 });
@@ -921,23 +977,25 @@ function paintStaffList(){
   var w=$("st-list");
   if(!staffCache.length){ w.innerHTML='<div class="empty"><b>لا توجد حسابات بعد</b>أضيفي أول حساب أعلاه.</div>'; return; }
   w.innerHTML = staffCache.map(function(e){
-    return '<div class="list-row"><div class="nm">'+esc(e.name)+'<small>'+esc(e.username||"—")+' · '+(e.active?"مفعّل":"موقوف")+'</small></div>'
+    return '<div class="list-row"><div class="nm">'+esc(e.name)+'<small>'+esc(e.username||"—")+(e.jobTitle?' · '+esc(e.jobTitle):'')+' · '+(e.active?"مفعّل":"موقوف")+'</small></div>'
       + '<span class="pill '+(e.role==="admin"?"admin":"op")+'">'+roleLabel(e.role)+'</span>'
       + (e.pendingReset? '<span class="pill no">طلبت كلمة مرور جديدة</span>' : '')
+      + '<button class="rowbtn" data-edit="'+e.id+'">تعديل</button>'
       + '<button class="rowbtn" data-role="'+e.id+'">تغيير الصلاحية</button>'
       + '<button class="rowbtn'+(e.pendingReset?' d':'')+'" data-pw="'+e.id+'">إعادة تعيين كلمة المرور</button>'
+      + '<button class="rowbtn d" data-del="'+e.id+'">حذف</button>'
       + '<label class="sw"><input type="checkbox" data-id="'+e.id+'" '+(e.active?"checked":"")+'><span class="trk"><span class="kn"></span></span></label></div>';
   }).join("");
 }
 async function refreshStaff(){ staffCache = await apiGet("/api/staff"); paintStaffList(); }
 $("st-refresh").onclick=refreshStaff;
 $("st-add").onclick=async function(){
-  var n=$("st-name").value.trim(), u=$("st-user").value.trim(), p=$("st-pass").value||"0000", r=$("st-role").value;
+  var n=$("st-name").value.trim(), u=$("st-user").value.trim(), j=$("st-job").value.trim(), p=$("st-pass").value||"0000", r=$("st-role").value;
   if(!n){ toast("اكتبي الاسم"); return; }
   if(!u){ toast("اكتبي الرقم الشخصي"); return; }
   try{
-    await apiPost("/api/staff", {name:n, username:u, password:p, role:r});
-    $("st-name").value=""; $("st-user").value=""; $("st-pass").value=""; $("st-role").value="operator";
+    await apiPost("/api/staff", {name:n, username:u, jobTitle:j, password:p, role:r});
+    $("st-name").value=""; $("st-user").value=""; $("st-job").value=""; $("st-pass").value=""; $("st-role").value="operator";
     await refreshStaff(); toast("أُضيف الحساب");
   }catch(e){ toast(e.message); }
 };
@@ -946,8 +1004,15 @@ $("st-list").addEventListener("change", async function(e){
   try{ await apiPatch("/api/staff/"+cb.dataset.id, {active: cb.checked}); await refreshStaff(); toast(cb.checked?"تم التفعيل":"تم الإيقاف"); }
   catch(err){ toast(err.message); cb.checked=!cb.checked; }
 });
+var staffEditingId=null;
 $("st-list").addEventListener("click", async function(e){
   var rb=e.target.closest("[data-role]"); var pb=e.target.closest("[data-pw]");
+  var eb=e.target.closest("[data-edit]"); var db=e.target.closest("[data-del]");
+  if(eb){
+    var emp0=staffCache.filter(function(x){return x.id===eb.dataset.edit;})[0]; if(!emp0) return;
+    staffEditingId=emp0.id; $("sm-name").value=emp0.name; $("sm-job").value=emp0.jobTitle||"";
+    $("v-staffmodal").classList.remove("hidden"); $("sm-name").focus();
+  }
   if(rb){
     var emp=staffCache.filter(function(x){return x.id===rb.dataset.role;})[0]; if(!emp) return;
     var to = emp.role==="admin"?"تسجيل فقط":"إشرافية";
@@ -963,7 +1028,22 @@ $("st-list").addEventListener("click", async function(e){
     try{ await apiPatch("/api/staff/"+emp2.id, {newPassword: np}); await refreshStaff(); toast("تم تغيير كلمة المرور"); }
     catch(err){ toast(err.message); }
   }
+  if(db){
+    var emp3=staffCache.filter(function(x){return x.id===db.dataset.del;})[0]; if(!emp3) return;
+    if(!confirm('حذف حساب "'+emp3.name+'" نهائياً؟ سجلاتها السابقة تبقى محفوظة في التقارير، لكنها لن تستطيع الدخول بعد الآن.')) return;
+    try{ await apiDelete("/api/staff/"+emp3.id); await refreshStaff(); toast("تم الحذف"); }
+    catch(err){ toast(err.message); }
+  }
 });
+$("sm-cancel").onclick=function(){ $("v-staffmodal").classList.add("hidden"); staffEditingId=null; };
+$("sm-save").onclick=async function(){
+  var n=$("sm-name").value.trim();
+  if(!n){ toast("اكتبي الاسم"); return; }
+  try{
+    await apiPatch("/api/staff/"+staffEditingId, {name:n, jobTitle:$("sm-job").value.trim()});
+    $("v-staffmodal").classList.add("hidden"); staffEditingId=null; await refreshStaff(); toast("تم الحفظ");
+  }catch(e){ toast(e.message); }
+};
 function parseStaffCsv(text){
   var lines = text.replace(/^\\uFEFF/,"").split(/\\r?\\n/).filter(function(l){return l.trim().length;});
   var out=[];
@@ -972,12 +1052,13 @@ function parseStaffCsv(text){
     if(idx===0 && /الاسم|name/i.test(cells[0]||"")) return;
     if(!cells[0]) return;
     var username = cells[1] || "";
-    var activeFlag=(cells[2]||"").toLowerCase();
+    var jobTitle = cells[2] || "";
+    var activeFlag=(cells[3]||"").toLowerCase();
     var active = activeFlag===""? true : ["نعم","active","1","true","yes"].indexOf(activeFlag)!==-1;
-    var roleFlag=(cells[3]||"").toLowerCase();
+    var roleFlag=(cells[4]||"").toLowerCase();
     var role = ["مشرف","admin"].indexOf(roleFlag)!==-1 ? "admin" : "operator";
-    var pass = cells[4] || "0000";
-    out.push({name:cells[0], username:username, active:active, role:role, pass:pass});
+    var pass = cells[5] || "0000";
+    out.push({name:cells[0], username:username, jobTitle:jobTitle, active:active, role:role, pass:pass});
   });
   return out;
 }
@@ -989,7 +1070,7 @@ async function ingestStaffCsv(file){
   for(var i=0;i<rows.length;i++){
     var r = rows[i];
     try{
-      var created = await apiPost("/api/staff", {name:r.name, username:r.username, password:r.pass, role:r.role});
+      var created = await apiPost("/api/staff", {name:r.name, username:r.username, jobTitle:r.jobTitle, password:r.pass, role:r.role});
       if(!r.active) await apiPatch("/api/staff/"+created.id, {active:false});
       added++;
     }catch(e){ failed++; }
@@ -1071,15 +1152,20 @@ function paintReports(){
   bars($("p-byop"), Object.keys(byop).map(function(k){return [k,byop[k]];}).sort(function(a,b){return b[1]-a[1];}));
   var byh={}; rows.forEach(function(r){ var h=(r.time||"").slice(0,2); if(h) byh[h]=(byh[h]||0)+1; });
   bars($("p-byhour"), Object.keys(byh).sort().map(function(k){return [k+":00", byh[k]];}));
+  var byNr={}; rows.forEach(function(r){ if(r.deptNoResponse && r.dept) byNr[r.dept]=(byNr[r.dept]||0)+1; });
+  bars($("p-byNoResponse"), Object.keys(byNr).map(function(k){return [k,byNr[k]];}).sort(function(a,b){return b[1]-a[1];}));
   $("p-count").textContent=rows.length;
   var w=$("p-tablewrap");
   if(!rows.length){ w.innerHTML='<div class="empty"><b>لا توجد سجلات بعد</b>ستظهر هنا فور تسجيل الموظفات لأول مكالمة.</div>'; return; }
   var h='<table><thead><tr><th>التاريخ</th><th>الوقت</th><th>الحساب</th><th>المتصل</th><th>الموضوع</th><th>الإجراء</th><th></th></tr></thead><tbody>';
   rows.slice(0,500).forEach(function(r){
+    var noResp = r.action==="تحويل" ? (r.deptNoResponse
+      ? '<div class="edited" style="color:var(--err)">⚠ لم تستجب — <button class="rowbtn" data-nr="'+r.id+'" data-v="0">إلغاء</button></div>'
+      : '<div><button class="rowbtn" data-nr="'+r.id+'" data-v="1">لم تستجب الجهة؟</button></div>') : '';
     h += '<tr><td class="t-time">'+esc(r.date)+'</td><td class="t-time">'+esc(r.time)+'</td><td>'+esc(r.opName)+'</td>'
       + '<td>'+esc(r.caller||"—")+'<div class="t-sub">'+esc(r.num||"")+'</div></td>'
       + '<td>'+esc(r.subject||"—")+(r.notes?'<div class="t-sub">'+esc(r.notes)+'</div>':'')+(r.adminNote?'<div class="t-sub" style="color:var(--brand)">مشرف: '+esc(r.adminNote)+'</div>':'')+'</td>'
-      + '<td>'+pill(r.action)+(r.dept?'<div class="t-sub">'+esc(r.dept)+'</div>':'')+(r.editCount?'<div class="edited">مُعدَّلة</div>':'')+'</td>'
+      + '<td>'+pill(r.action)+(r.dept?'<div class="t-sub">'+esc(r.dept)+'</div>':'')+(r.editCount?'<div class="edited">مُعدَّلة</div>':'')+noResp+'</td>'
       + '<td><button class="rowbtn" data-ae="'+r.id+'">تعديل</button></td></tr>';
   });
   w.innerHTML = h+'</tbody></table>' + (rows.length>500? '<div class="hint" style="padding:10px 14px">عُرضت أول 500 صف — استخدمي التصدير للسجل الكامل.</div>':'');
@@ -1088,13 +1174,79 @@ async function refreshRecords(){ allRecords = await apiGet("/api/records"); pain
 ["p-from","p-to","p-op"].forEach(function(i){ $(i).onchange=paintReports; });
 $("p-refresh").onclick=refreshRecords;
 $("p-csv").onclick=function(){ var rows=filtered(); if(!rows.length){toast("لا توجد بيانات");return;} dl("سجل-البدالة-مجمّع-"+todayStr()+".csv", csv(rows), "text/csv;charset=utf-8"); };
-$("p-tablewrap").addEventListener("click", function(e){
+function pdfBarsHtml(pairs){
+  var max=pairs.reduce(function(m,p){return Math.max(m,p[1]);},0)||1;
+  return pairs.map(function(p){
+    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px">'
+      +'<div style="width:150px">'+esc(p[0])+'</div>'
+      +'<div style="flex:1;background:#f1eee9;border-radius:3px;height:8px;overflow:hidden"><div style="background:#8b0000;height:100%;width:'+Math.round(p[1]/max*100)+'%"></div></div>'
+      +'<div style="width:30px;text-align:end">'+p[1]+'</div></div>';
+  }).join("") || '<div style="color:#7c7672;font-size:12px">لا توجد بيانات</div>';
+}
+function exportPdf(){
+  var rows=filtered();
+  if(!rows.length){ toast("لا توجد بيانات"); return; }
+  var days={}; rows.forEach(function(r){days[r.date]=1;}); var nd=Object.keys(days).length;
+  var trCount=rows.filter(function(r){return r.action==="تحويل";}).length;
+  var byop={}; rows.forEach(function(r){ byop[r.opName]=(byop[r.opName]||0)+1; });
+  var byh={}; rows.forEach(function(r){ var h=(r.time||"").slice(0,2); if(h) byh[h]=(byh[h]||0)+1; });
+  var byNr={}; rows.forEach(function(r){ if(r.deptNoResponse && r.dept) byNr[r.dept]=(byNr[r.dept]||0)+1; });
+  var fromV=$("p-from").value||"البداية", toV=$("p-to").value||"اليوم";
+  var opSel=$("p-op"); var opLabel = opSel.value? opSel.options[opSel.selectedIndex].textContent : "كل الحسابات";
+  var rowsHtml = rows.map(function(r){
+    return '<tr><td>'+esc(r.date)+'</td><td>'+esc(r.time)+'</td><td>'+esc(r.opName)+'</td>'
+      +'<td>'+esc(r.caller||"—")+'<br><span style="color:#7c7672">'+esc(r.num||"")+'</span></td>'
+      +'<td>'+esc(r.subject||"—")+'</td>'
+      +'<td>'+esc(r.action)+(r.dept?'<br><span style="color:#7c7672">'+esc(r.dept)+'</span>':'')+(r.deptNoResponse?'<br><span style="color:#a3231a">⚠ لم تستجب الجهة</span>':'')+'</td></tr>';
+  }).join("");
+  var html = '<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>تقرير سجل مكالمات البدالة</title><style>'
+    +'*{box-sizing:border-box} body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;color:#1c1a19;margin:0;padding:28px 34px}'
+    +'.hd{display:flex;align-items:center;gap:14px;border-bottom:3px solid #8b0000;padding-bottom:14px;margin-bottom:18px}'
+    +'.hd img{width:52px;height:52px;border-radius:50%} .hd h1{font-size:18px;margin:0} .hd .s{font-size:12px;color:#7c7672}'
+    +'.meta{font-size:12px;color:#4a4644;margin-bottom:18px;line-height:1.9}'
+    +'.kpis{display:flex;gap:12px;margin-bottom:22px}'
+    +'.kpi{flex:1;border:1px solid #e2ded7;border-radius:8px;padding:10px 14px}'
+    +'.kpi .k{font-size:11px;color:#7c7672} .kpi .v{font-size:20px;font-weight:700}'
+    +'.sec{margin-bottom:22px} .sec h2{font-size:14px;border-bottom:1px solid #e2ded7;padding-bottom:6px}'
+    +'table{width:100%;border-collapse:collapse;font-size:11px} th,td{border-bottom:1px solid #eee;padding:6px 8px;text-align:right}'
+    +'th{background:#fbfaf8;color:#7c7672;font-weight:600}'
+    +'.ft{margin-top:24px;font-size:10.5px;color:#7c7672;text-align:center}'
+    +'@media print{ .noprint{display:none} }'
+    +'</style></head><body>'
+    +'<div class="hd"><img src="'+SEAL_URI+'"><div><h1>تقرير تحليلي — سجل مكالمات البدالة</h1><div class="s">مجموعة الهندسة الإلكترونية — إدارة المنشآت التعليمية — وزارة التربية والتعليم</div></div></div>'
+    +'<div class="meta">الفترة: من '+esc(fromV)+' إلى '+esc(toV)+' &nbsp;·&nbsp; الحساب: '+esc(opLabel)+' &nbsp;·&nbsp; تاريخ الإصدار: '+todayStr()+'</div>'
+    +'<div class="kpis">'
+      +'<div class="kpi"><div class="k">إجمالي المكالمات</div><div class="v">'+rows.length+'</div></div>'
+      +'<div class="kpi"><div class="k">أيام مسجّلة</div><div class="v">'+nd+'</div></div>'
+      +'<div class="kpi"><div class="k">متوسط اليوم</div><div class="v">'+(nd?(rows.length/nd).toFixed(1):"0")+'</div></div>'
+      +'<div class="kpi"><div class="k">نسبة التحويل</div><div class="v">'+(rows.length?Math.round(trCount/rows.length*100):0)+'%</div></div>'
+    +'</div>'
+    +'<div class="sec"><h2>المكالمات لكل حساب</h2>'+pdfBarsHtml(Object.keys(byop).map(function(k){return [k,byop[k]];}).sort(function(a,b){return b[1]-a[1];}))+'</div>'
+    +'<div class="sec"><h2>التوزيع بالساعة</h2>'+pdfBarsHtml(Object.keys(byh).sort().map(function(k){return [k+":00", byh[k]];}))+'</div>'
+    +'<div class="sec"><h2>الجهات الأقل استجابة للتحويل</h2>'+pdfBarsHtml(Object.keys(byNr).map(function(k){return [k,byNr[k]];}).sort(function(a,b){return b[1]-a[1];}))+'</div>'
+    +'<div class="sec"><h2>السجل التفصيلي ('+rows.length+' مكالمة)</h2>'
+    +'<table><thead><tr><th>التاريخ</th><th>الوقت</th><th>الحساب</th><th>المتصل</th><th>الموضوع</th><th>الإجراء</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>'
+    +'<div class="ft">تم إصدار هذا التقرير آلياً من نظام سجل مكالمات البدالة</div>'
+    +'<div class="noprint" style="text-align:center;margin-top:20px"><button onclick="window.print()" style="padding:10px 22px;background:#8b0000;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer">اطبعي أو احفظي كـ PDF (Ctrl+P)</button></div>'
+    +'</body></html>';
+  var w = window.open("", "_blank");
+  if(!w){ toast("يرجى السماح بالنوافذ المنبثقة لهذا الموقع"); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+}
+$("p-pdf").onclick = exportPdf;
+$("p-tablewrap").addEventListener("click", async function(e){
+  var nr=e.target.closest("[data-nr]");
+  if(nr){
+    try{ await apiPatch("/api/records/"+nr.dataset.nr, {deptNoResponse: nr.dataset.v==="1"}); await refreshRecords(); toast(nr.dataset.v==="1"?"تم وضع العلامة":"تم إلغاء العلامة"); }
+    catch(err){ toast(err.message); }
+    return;
+  }
   var ae=e.target.closest("[data-ae]"); if(!ae) return;
   var r = allRecords.filter(function(x){return x.id===ae.dataset.ae;})[0]; if(!r) return;
   openEditModal(r);
 });
 
-function fillEmDept(){ $("em-dept").innerHTML = '<option value="">—</option>' + transfers.map(function(t){ return '<option>'+esc(t.entity)+'</option>'; }).join(""); }
+function fillEmDept(){ $("em-dept").innerHTML = '<option value="">—</option>' + transfers.map(function(t){ return '<option value="'+esc(t.entity)+'">'+esc(t.entity)+(t.num?' — '+esc(t.num):'')+'</option>'; }).join(""); }
 function openEditModal(r){
   editingId=r.id;
   $("em-title").textContent = "تعديل مكالمة — "+r.opName;
