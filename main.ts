@@ -500,8 +500,8 @@ tbody tr:hover{background:#fcfbf9}
 .filters input,.filters select{width:auto;min-width:150px}
 .bars{display:flex;flex-direction:column;gap:7px}
 .bline{display:grid;grid-template-columns:minmax(90px,150px) 1fr 44px;gap:10px;align-items:center;font-size:13px}
-.btrack{background:#f1eee9;border-radius:4px;height:9px;overflow:hidden}
-.bfill{background:var(--brand);height:100%;border-radius:4px}
+.btrack{background:#f1eee9;border-radius:5px;height:10px;overflow:hidden}
+.bfill{background:linear-gradient(90deg,var(--brand) 0%,var(--brand-deep) 100%);height:100%;border-radius:5px}
 .bnum{text-align:end;font-variant-numeric:tabular-nums;color:var(--ink-2);font-size:12.5px}
 .drop{border:1.5px dashed var(--line);border-radius:var(--r);padding:22px;text-align:center;color:var(--ink-3);font-size:13.5px;background:#fbfaf8}
 .drop.over{border-color:var(--brand);background:var(--brand-soft);color:var(--brand)}
@@ -651,10 +651,10 @@ tbody tr:hover{background:#fcfbf9}
 
     <div class="tabpage on" id="tp-reports">
       <div class="kpis">
-        <div class="kpi"><div class="k">إجمالي المكالمات</div><div class="v" id="p-total">0</div></div>
-        <div class="kpi"><div class="k">أيام مسجّلة</div><div class="v" id="p-days">0</div></div>
-        <div class="kpi"><div class="k">متوسط اليوم</div><div class="v" id="p-avg">0</div></div>
-        <div class="kpi"><div class="k">نسبة التحويل</div><div class="v" id="p-trp">0%</div></div>
+        <div class="kpi" style="border-inline-start:4px solid var(--brand)"><div class="k">إجمالي المكالمات</div><div class="v" id="p-total">0</div></div>
+        <div class="kpi" style="border-inline-start:4px solid var(--ink-2)"><div class="k">أيام مسجّلة</div><div class="v" id="p-days">0</div></div>
+        <div class="kpi" style="border-inline-start:4px solid var(--ok)"><div class="k">متوسط اليوم</div><div class="v" id="p-avg">0</div></div>
+        <div class="kpi" style="border-inline-start:4px solid var(--warn)"><div class="k">نسبة التحويل</div><div class="v" id="p-trp">0%</div></div>
       </div>
       <div class="filters">
         <div class="f"><label for="p-from">من تاريخ</label><input type="date" id="p-from"></div>
@@ -784,6 +784,7 @@ tbody tr:hover{background:#fcfbf9}
 "use strict";
 var me = null, transfers = [], editingId = null;
 var SEAL_URI = "${SEAL_DATA_URI}";
+var LOGO_URI = "${MOE_LOGO_DATA_URI}";
 
 function $(id){ return document.getElementById(id); }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }
@@ -1174,60 +1175,105 @@ async function refreshRecords(){ allRecords = await apiGet("/api/records"); pain
 ["p-from","p-to","p-op"].forEach(function(i){ $(i).onchange=paintReports; });
 $("p-refresh").onclick=refreshRecords;
 $("p-csv").onclick=function(){ var rows=filtered(); if(!rows.length){toast("لا توجد بيانات");return;} dl("سجل-البدالة-مجمّع-"+todayStr()+".csv", csv(rows), "text/csv;charset=utf-8"); };
-function pdfBarsHtml(pairs){
+function pdfBarsHtml(pairs, color){
+  color = color || "#8b0000";
   var max=pairs.reduce(function(m,p){return Math.max(m,p[1]);},0)||1;
   return pairs.map(function(p){
-    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px">'
-      +'<div style="width:150px">'+esc(p[0])+'</div>'
-      +'<div style="flex:1;background:#f1eee9;border-radius:3px;height:8px;overflow:hidden"><div style="background:#8b0000;height:100%;width:'+Math.round(p[1]/max*100)+'%"></div></div>'
-      +'<div style="width:30px;text-align:end">'+p[1]+'</div></div>';
+    return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px">'
+      +'<div style="width:160px;color:#1c1a19">'+esc(p[0])+'</div>'
+      +'<div style="flex:1;background:#f1eee9;border-radius:5px;height:11px;overflow:hidden"><div style="background:linear-gradient(90deg,'+color+' 0%,'+color+'cc 100%);height:100%;width:'+Math.round(p[1]/max*100)+'%;border-radius:5px"></div></div>'
+      +'<div style="width:32px;text-align:end;font-weight:700;color:#1c1a19">'+p[1]+'</div></div>';
   }).join("") || '<div style="color:#7c7672;font-size:12px">لا توجد بيانات</div>';
+}
+function pdfSectionTitle(color, text, sub){
+  return '<h2><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+color+';margin-inline-end:8px;vertical-align:middle"></span>'+esc(text)
+    +(sub?'<span style="font-weight:400;color:#7c7672;font-size:11px;margin-inline-start:8px">'+esc(sub)+'</span>':'')+'</h2>';
 }
 function exportPdf(){
   var rows=filtered();
   if(!rows.length){ toast("لا توجد بيانات"); return; }
-  var days={}; rows.forEach(function(r){days[r.date]=1;}); var nd=Object.keys(days).length;
+  var days={}; rows.forEach(function(r){days[r.date]=(days[r.date]||0)+1;}); var dayKeys=Object.keys(days).sort(); var nd=dayKeys.length;
   var trCount=rows.filter(function(r){return r.action==="تحويل";}).length;
   var byop={}; rows.forEach(function(r){ byop[r.opName]=(byop[r.opName]||0)+1; });
   var byh={}; rows.forEach(function(r){ var h=(r.time||"").slice(0,2); if(h) byh[h]=(byh[h]||0)+1; });
   var byNr={}; rows.forEach(function(r){ if(r.deptNoResponse && r.dept) byNr[r.dept]=(byNr[r.dept]||0)+1; });
   var fromV=$("p-from").value||"البداية", toV=$("p-to").value||"اليوم";
   var opSel=$("p-op"); var opLabel = opSel.value? opSel.options[opSel.selectedIndex].textContent : "كل الحسابات";
-  var rowsHtml = rows.map(function(r){
-    return '<tr><td>'+esc(r.date)+'</td><td>'+esc(r.time)+'</td><td>'+esc(r.opName)+'</td>'
+
+  // insights
+  var topOp = Object.keys(byop).sort(function(a,b){return byop[b]-byop[a];})[0];
+  var hourPairs = Object.keys(byh).sort().map(function(k){return [k+":00", byh[k]];});
+  var topHour = hourPairs.slice().sort(function(a,b){return b[1]-a[1];})[0];
+  var noRespTotal = Object.keys(byNr).reduce(function(s,k){return s+byNr[k];},0);
+  var topNoResp = Object.keys(byNr).sort(function(a,b){return byNr[b]-byNr[a];})[0];
+  var insights = [];
+  if(topOp) insights.push('أعلى الحسابات نشاطاً: <b>'+esc(topOp)+'</b> بواقع '+byop[topOp]+' مكالمة.');
+  if(topHour) insights.push('ساعة الذروة: <b>'+esc(topHour[0])+'</b> بمعدّل '+topHour[1]+' مكالمة.');
+  if(noRespTotal>0) insights.push('<span style="color:#a3231a">'+noRespTotal+' مكالمة محوَّلة لم تجد استجابة</span>'+(topNoResp?'، أكثرها إلى <b>'+esc(topNoResp)+'</b> ('+byNr[topNoResp]+' مرة).':'.'));
+  else insights.push('<span style="color:#1f6b46">لا توجد مكالمات محوَّلة بلا استجابة في هذه الفترة.</span>');
+
+  var rowsHtml = rows.map(function(r,i){
+    return '<tr style="background:'+(i%2?'#fbfaf8':'#fff')+'"><td>'+esc(r.date)+'</td><td>'+esc(r.time)+'</td><td>'+esc(r.opName)+'</td>'
       +'<td>'+esc(r.caller||"—")+'<br><span style="color:#7c7672">'+esc(r.num||"")+'</span></td>'
       +'<td>'+esc(r.subject||"—")+'</td>'
       +'<td>'+esc(r.action)+(r.dept?'<br><span style="color:#7c7672">'+esc(r.dept)+'</span>':'')+(r.deptNoResponse?'<br><span style="color:#a3231a">⚠ لم تستجب الجهة</span>':'')+'</td></tr>';
   }).join("");
+
+  var kpiDefs = [
+    ["إجمالي المكالمات", rows.length, "#8b0000"],
+    ["أيام مسجّلة", nd, "#4a4644"],
+    ["متوسط اليوم", nd?(rows.length/nd).toFixed(1):"0", "#1f6b46"],
+    ["نسبة التحويل", (rows.length?Math.round(trCount/rows.length*100):0)+"%", "#8a5a00"]
+  ];
+  var kpisHtml = kpiDefs.map(function(k){
+    return '<div class="kpi" style="border-inline-start:4px solid '+k[2]+'"><div class="k">'+esc(k[0])+'</div><div class="v">'+k[1]+'</div></div>';
+  }).join("");
+
   var html = '<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>تقرير سجل مكالمات البدالة</title><style>'
-    +'*{box-sizing:border-box} body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;color:#1c1a19;margin:0;padding:28px 34px}'
-    +'.hd{display:flex;align-items:center;gap:14px;border-bottom:3px solid #8b0000;padding-bottom:14px;margin-bottom:18px}'
-    +'.hd img{width:52px;height:52px;border-radius:50%} .hd h1{font-size:18px;margin:0} .hd .s{font-size:12px;color:#7c7672}'
-    +'.meta{font-size:12px;color:#4a4644;margin-bottom:18px;line-height:1.9}'
-    +'.kpis{display:flex;gap:12px;margin-bottom:22px}'
-    +'.kpi{flex:1;border:1px solid #e2ded7;border-radius:8px;padding:10px 14px}'
-    +'.kpi .k{font-size:11px;color:#7c7672} .kpi .v{font-size:20px;font-weight:700}'
-    +'.sec{margin-bottom:22px} .sec h2{font-size:14px;border-bottom:1px solid #e2ded7;padding-bottom:6px}'
-    +'table{width:100%;border-collapse:collapse;font-size:11px} th,td{border-bottom:1px solid #eee;padding:6px 8px;text-align:right}'
-    +'th{background:#fbfaf8;color:#7c7672;font-weight:600}'
-    +'.ft{margin-top:24px;font-size:10.5px;color:#7c7672;text-align:center}'
-    +'@media print{ .noprint{display:none} }'
+    +'*{box-sizing:border-box} @page{ size:A4; margin:14mm 12mm; }'
+    +'body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;color:#1c1a19;margin:0;padding:26px 32px;font-size:13px}'
+    +'.hd{display:flex;align-items:center;gap:16px;border-bottom:3px solid #8b0000;padding-bottom:16px;margin-bottom:6px}'
+    +'.hd .seal{width:50px;height:50px;border-radius:50%;flex:none}'
+    +'.hd .logo{height:44px;flex:none}'
+    +'.hd .mid{flex:1}'
+    +'.hd h1{font-size:19px;margin:0;letter-spacing:.2px} .hd .s{font-size:11.5px;color:#7c7672;margin-top:2px}'
+    +'.meta{font-size:11.5px;color:#4a4644;margin:14px 0 20px;line-height:1.9;background:#fbfaf8;border:1px solid #f0ede8;border-radius:8px;padding:9px 14px;display:inline-block}'
+    +'.kpis{display:flex;gap:12px;margin-bottom:20px}'
+    +'.kpi{flex:1;background:#fff;border:1px solid #e2ded7;border-radius:8px;padding:11px 15px;box-shadow:0 1px 2px rgba(28,26,25,.05)}'
+    +'.kpi .k{font-size:10.5px;color:#7c7672;letter-spacing:.2px} .kpi .v{font-size:22px;font-weight:700;margin-top:2px}'
+    +'.insights{background:#f4e9e9;border:1px solid #e8d3d3;border-radius:8px;padding:13px 16px;margin-bottom:22px;font-size:12px;line-height:2}'
+    +'.insights .lbl{font-weight:700;color:#8b0000;font-size:11px;letter-spacing:.3px;margin-bottom:4px}'
+    +'.grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px}'
+    +'.sec{margin-bottom:22px; break-inside:avoid}'
+    +'.sec h2{font-size:13.5px;border-bottom:1px solid #e2ded7;padding-bottom:7px;margin:0 0 12px}'
+    +'table{width:100%;border-collapse:collapse;font-size:10.5px}'
+    +'thead{display:table-header-group}'
+    +'tr{break-inside:avoid}'
+    +'th,td{border-bottom:1px solid #eee;padding:6px 8px;text-align:right}'
+    +'th{background:#8b0000;color:#fff;font-weight:600;font-size:10px}'
+    +'.ft{margin-top:22px;font-size:10px;color:#7c7672;text-align:center;border-top:1px solid #f0ede8;padding-top:10px}'
+    +'.tip{font-size:10.5px;color:#8a5a00;background:#fbf1de;border:1px solid #eddfbf;border-radius:6px;padding:8px 12px;margin-top:14px}'
+    +'@media print{ .noprint{display:none} body{padding:0} }'
     +'</style></head><body>'
-    +'<div class="hd"><img src="'+SEAL_URI+'"><div><h1>تقرير تحليلي — سجل مكالمات البدالة</h1><div class="s">مجموعة الهندسة الإلكترونية — إدارة المنشآت التعليمية — وزارة التربية والتعليم</div></div></div>'
-    +'<div class="meta">الفترة: من '+esc(fromV)+' إلى '+esc(toV)+' &nbsp;·&nbsp; الحساب: '+esc(opLabel)+' &nbsp;·&nbsp; تاريخ الإصدار: '+todayStr()+'</div>'
-    +'<div class="kpis">'
-      +'<div class="kpi"><div class="k">إجمالي المكالمات</div><div class="v">'+rows.length+'</div></div>'
-      +'<div class="kpi"><div class="k">أيام مسجّلة</div><div class="v">'+nd+'</div></div>'
-      +'<div class="kpi"><div class="k">متوسط اليوم</div><div class="v">'+(nd?(rows.length/nd).toFixed(1):"0")+'</div></div>'
-      +'<div class="kpi"><div class="k">نسبة التحويل</div><div class="v">'+(rows.length?Math.round(trCount/rows.length*100):0)+'%</div></div>'
+    +'<div class="hd"><img class="logo" src="'+LOGO_URI+'"><div class="mid"><h1>تقرير تحليلي — سجل مكالمات البدالة</h1><div class="s">مجموعة الهندسة الإلكترونية — إدارة المنشآت التعليمية — وزارة التربية والتعليم</div></div><img class="seal" src="'+SEAL_URI+'"></div>'
+    +'<div class="meta">الفترة: <b>من '+esc(fromV)+' إلى '+esc(toV)+'</b> &nbsp;·&nbsp; الحساب: <b>'+esc(opLabel)+'</b> &nbsp;·&nbsp; تاريخ الإصدار: '+todayStr()+'</div>'
+    +'<div class="kpis">'+kpisHtml+'</div>'
+    +'<div class="insights"><div class="lbl">أبرز الملاحظات</div>'+insights.map(function(t){return '<div>• '+t+'</div>';}).join("")+'</div>'
+    +'<div class="grid2">'
+      +'<div class="sec">'+pdfSectionTitle("#8b0000","المكالمات لكل حساب")+pdfBarsHtml(Object.keys(byop).map(function(k){return [k,byop[k]];}).sort(function(a,b){return b[1]-a[1];}),"#8b0000")+'</div>'
+      +'<div class="sec">'+pdfSectionTitle("#4a4644","المكالمات لكل يوم")+pdfBarsHtml(dayKeys.map(function(k){return [k, days[k]];}),"#4a4644")+'</div>'
     +'</div>'
-    +'<div class="sec"><h2>المكالمات لكل حساب</h2>'+pdfBarsHtml(Object.keys(byop).map(function(k){return [k,byop[k]];}).sort(function(a,b){return b[1]-a[1];}))+'</div>'
-    +'<div class="sec"><h2>التوزيع بالساعة</h2>'+pdfBarsHtml(Object.keys(byh).sort().map(function(k){return [k+":00", byh[k]];}))+'</div>'
-    +'<div class="sec"><h2>الجهات الأقل استجابة للتحويل</h2>'+pdfBarsHtml(Object.keys(byNr).map(function(k){return [k,byNr[k]];}).sort(function(a,b){return b[1]-a[1];}))+'</div>'
-    +'<div class="sec"><h2>السجل التفصيلي ('+rows.length+' مكالمة)</h2>'
+    +'<div class="grid2">'
+      +'<div class="sec">'+pdfSectionTitle("#1f6b46","التوزيع بالساعة")+pdfBarsHtml(hourPairs,"#1f6b46")+'</div>'
+      +'<div class="sec">'+pdfSectionTitle("#a3231a","الجهات الأقل استجابة للتحويل")+pdfBarsHtml(Object.keys(byNr).map(function(k){return [k,byNr[k]];}).sort(function(a,b){return b[1]-a[1];}),"#a3231a")+'</div>'
+    +'</div>'
+    +'<div class="sec">'+pdfSectionTitle("#7c7672","السجل التفصيلي","("+rows.length+" مكالمة)")
     +'<table><thead><tr><th>التاريخ</th><th>الوقت</th><th>الحساب</th><th>المتصل</th><th>الموضوع</th><th>الإجراء</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>'
     +'<div class="ft">تم إصدار هذا التقرير آلياً من نظام سجل مكالمات البدالة</div>'
-    +'<div class="noprint" style="text-align:center;margin-top:20px"><button onclick="window.print()" style="padding:10px 22px;background:#8b0000;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer">اطبعي أو احفظي كـ PDF (Ctrl+P)</button></div>'
+    +'<div class="noprint" style="text-align:center;margin-top:20px">'
+      +'<button onclick="window.print()" style="padding:11px 26px;background:#8b0000;color:#fff;border:none;border-radius:6px;font-size:14.5px;font-weight:600;cursor:pointer">اطبعي أو احفظي كـ PDF (Ctrl+P)</button>'
+      +'<div class="tip">قبل الحفظ: من نافذة الطباعة افتحي "More settings" وفعّلي "Background graphics" حتى تظهر الألوان والرسوم البيانية في الملف الناتج.</div>'
+    +'</div>'
     +'</body></html>';
   var w = window.open("", "_blank");
   if(!w){ toast("يرجى السماح بالنوافذ المنبثقة لهذا الموقع"); return; }
